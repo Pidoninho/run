@@ -1,0 +1,788 @@
+-- Torneio de Racing em duplas para 32 participantes
+-- Escrito por Ninguem para Pidoninho
+-- 13/02/18
+-- Adaptado para duplas por Laagaadoo#0000 - 15/01/20
+
+--[[ INSTRUÇÕES --
+  É um script para gerenciar um torneio de eliminação simples com 4 fases.
+  Os administradores devem ser colocados na tabela ADMIN abaixo. Os administradores têm poder para usar os comandos e gerenciar partidas.
+  Para impedir jogadores de participarem, coloque os nomes na tabela BAN abaixo.
+
+  Na tela inicial, os participantes clicam em Jogar para se inscreverem. Os administradores podem remover inscrições clicando no [x] ao lado dos nomes, mudar a quantidade de vitórias necessárias para vencer um confronto e iniciar o torneio. O torneio só pode iniciar com 16 participantes, mas tem um comando !random que os administradores podem usar para preencher a lista com nomes fictícios para fins de teste.
+
+  Antes de cada confronto é exibida uma tabela com a organização dos confrontos, onde mostra qual será a próxima. Nessa tela os administradores podem usar o comando !msg para colocar mensagens em destaque na tela. Para iniciar um confronto, um administrador deve clicar em Iniciar. Só é possível clicar em Iniciar após 3 segundos de inicialização do mapa por limitações do Lua.
+
+  Em um confronto, apenas os dois jogadores descritos na tabela irão competir. O jogador que entrar na toca primeiro ganha 1 ponto, quem ganhar o número de pontos necessários para vencer será o vencedor do confronto e avançará para a próxima fase. Se os dois jogadores morrerem* ou o tempo acabar, um novo mapa será colocado.
+
+  *Se o comando !random for usado no início, o mapa não será pulado caso não haja jogadores vivos.
+
+  Os administradores podem usar o comando !skip para anular o mapa atual e colocar um novo. Se alguém completar o mapa e o comando !skip for usado antes do mapa acabar, o ponto será removido do vencedor do mapa.
+
+  Os administradores podem usar o comando !win <nome do jogador> para conceder a vitória para algum dos dois jogadores do confronto. Isto pode ser usado para corrigir imprevistos ou para fins de teste.
+
+  Os administradores podem usar o comando !npp <codigo> a qualquer momento. O mapa colocado no comando será o próximo mapa colocado em um confronto. Caso queira desistir de colocar o mapa, digite !npp sem o código e o próximo mapa voltará a ser aleatório.
+
+  Após todos os confrontos serem encerrados, o próximo mapa será o pódio com os vencedores. Quando um administrador clicar em Encerrar, o mapa será encerrado e um novo torneio se iniciará.
+--]]
+
+tfm.exec.disableAfkDeath(true)
+tfm.exec.disableAutoNewGame(true)
+tfm.exec.disableAutoScore(true)
+tfm.exec.disableAutoShaman(true)
+tfm.exec.disableAutoTimeLeft(true)
+tfm.exec.disablePhysicalConsumables(true)
+
+ADMIN = {"Ninguem", "Pidoninho#0000", "Laagaadoo#0000"} -- lista de administradores
+
+BAN = {"Fulano", "Beltrano"} -- lista de banidos
+
+COMANDOS = {"win", "npp", "random", "skip", "msg"} -- comandos que serão ocultados do chat
+
+MAPAS = { "#17" }
+
+
+CONFIG = { -- configurações do torneio
+  mapaVitoria = "@7531898", -- mapa do podio
+  mapaInicio = "@7465292", -- mapa do inicio
+  mapaIntervalo = "@7465293", -- mapa da tabela
+  pontos = 2, -- pontos para vencer um confronto
+  podioPos = {{400,250},{480, 250},{320,250}}, -- posição dos numeros do podio
+}
+
+TEXT = {
+  WELCOME = "Bem vindo ao Torneio! Para participar, clique em Jogar.",
+  PLAY = "Jogar",
+  PARTICIPANDO = "Você está participando!",
+  PARTICIPANTES = "Participantes",
+  CONFIG = "Configurações",
+  CONFRONTOS = "Confrontos",
+  SCORE_MAX = "Pontos para vencer um confronto",
+  NUM_PARTICIPANTES = "Número de participantes",
+  REMOVE = "remover",
+  START = "Iniciar Torneio",
+  FINAL = "Final",
+  SEMIFINAL = "Semifinal",
+  TERCEIRO = "3º lugar",
+  PROXIMO_MAPA = "Proximo mapa inicia em... ",
+  ULTIMO_MAPA = "Finalizando em... ",
+  NPP = "Próximo mapa: ",
+  NPP_RANDOM = "O próximo mapa será aleatório.",
+  VENCEDOR = "%s e %s venceram o torneio! Parabéns!",
+  FINISH = "Terminar",
+  INTERVALO = "Intervalo",
+  PODIO = "Podio",
+  TORNEIO = "Torneio de Racing",
+}
+
+TEXTAREA = {
+  PLAY = 0,
+  PARTICIPANTES = 1,
+  SCORE_MAX = 2,
+  START = 3,
+  FINAL = 4,
+  TERCEIRO = 5,
+  TIMER = 6,
+  PRIMEIRO = 7,
+  SEGUNDO = 8,
+  TERCEIRO = 9,
+  VENCEDOR = 10,
+  MSG = 11,
+  SEMI1 = 12,
+  SEMI2 = 13,
+  JANELA_PARTICIPANTES = 5000,
+  CHAVE = 6000,
+}
+
+CONST = {
+  max = 32,
+}
+
+-- VARIAVEIS --
+
+MODO = "INICIO"
+
+ENTRADA = {} -- lista de jogadores que entraram/entrarão no torneio
+ENTRADA_AUX = {}
+DUPLAS = {}
+CONFRONTO = {}
+
+-- VARIAVEIS CRIADAS EM TEMPO DE EXECUÇÃO
+-- JOGADORES = {}
+-- VENCEDOR = false
+-- PODIO = {}
+-- TIMER = {}
+-- MSG = os.time()
+-- NPP = "@mapa"
+-- TESTE = false
+
+local sformat = string.format
+local tconcat = table.concat
+
+local atualizouParticipantes = false
+local ultimaEntrada = 0
+
+-- BIBLIOTECAS --
+
+
+-- FUNÇÕES AUXILIARES --
+
+function split(t,s)
+  -- retorna uma table com a string dividida
+  -- -- String t = texto a ser dividido
+  -- -- String s = símbolo de separação (opcional)
+	local a={}
+	for i,v in string.gmatch(t,string.format("[^%s]+",s or "%s")) do
+		table.insert(a,i)
+	end
+	return a
+end
+
+function isAdmin(p)
+  -- retorna true se o jogador é admin
+  for i, v in pairs(ADMIN) do
+    if p == v then
+      return true
+    end
+  end
+end
+
+function nickFormat(p)
+  -- formata para o padrão de nickname (inicial em maiúsculo, restante em minúsculo)
+  if p:sub(1,1) == "*" then
+    return p
+  else
+    return string.gsub(p:lower(), '%a', string.upper, 1)
+  end
+end
+
+function truncateNick(p)
+  if #p > 17 then
+    return p:sub(1,12) .. '...' .. p:sub(-5)
+  end
+  return p
+end
+
+function gerarNick()
+  -- retorna um nick fictício
+	local vogal = "aeiou"
+	local consoante = "bcdfghjklmnpqrstvwxyz"
+	local silabas = math.random(2,3)
+	local v = math.random(#vogal)
+	local c = math.random(#consoante)
+	local nick = ""
+	for i=1, silabas do
+		v = math.random(#vogal)
+		c = math.random(#consoante)
+		nick = nick .. consoante:sub(c,c) .. vogal:sub(v,v)
+	end
+  nick = nick .. '#' .. table.concat({math.random(0, 9), math.random(0, 9), math.random(0, 9), math.random(0, 9)}, '')
+	return(nick)
+end
+
+function todosMortos()
+  -- retorna true se não há jogadores vivos
+  for i, v in pairs(tfm.get.room.playerList) do
+    if not v.isDead then
+      return false
+    end
+  end
+  return not TESTE
+end
+
+function novoMapa()
+  -- coloca um mapa da lista MAPAS ou um mapa definido pelo comando !npp
+  if NPP then
+    local npp = NPP
+    NPP = nil
+    tfm.exec.newGame(npp)
+  else
+    tfm.exec.newGame(MAPAS[math.random(#MAPAS)])
+  end
+end
+
+-- CONTROLE DO TORNEIO --
+
+function reiniciarTorneio()
+  -- procedimento para zerar as configurações do torneio
+  ENTRADA = {}
+  ENTRADA_AUX = {}
+  DUPLAS = {}
+  TESTE = false
+  CONFRONTO = {
+    {player={}, score={0, 0}, winner=0, goto1=9, goto2=17}, -- 1
+    {player={}, score={0, 0}, winner=0, goto1=9, goto2=17}, -- 2
+    {player={}, score={0, 0}, winner=0, goto1=10, goto2=17}, -- 3
+    {player={}, score={0, 0}, winner=0, goto1=10, goto2=17}, -- 4
+    {player={}, score={0, 0}, winner=0, goto1=11, goto2=17}, -- 5
+    {player={}, score={0, 0}, winner=0, goto1=11, goto2=17}, -- 6
+    {player={}, score={0, 0}, winner=0, goto1=12, goto2=17}, -- 7
+    {player={}, score={0, 0}, winner=0, goto1=12, goto2=17}, -- 8
+
+    {player={}, score={0, 0}, winner=0, goto1=13, goto2=17}, -- 9
+    {player={}, score={0, 0}, winner=0, goto1=13, goto2=17}, -- 10
+    {player={}, score={0, 0}, winner=0, goto1=14, goto2=17}, -- 11
+    {player={}, score={0, 0}, winner=0, goto1=14, goto2=17}, -- 12
+
+    {player={}, score={0, 0}, winner=0, goto1=16, goto2=15}, -- 13
+    {player={}, score={0, 0}, winner=0, goto1=16, goto2=15}, -- 14
+
+    {player={}, score={0, 0}, winner=0, goto1=17, goto2=17}, -- 15
+    {player={}, score={0, 0}, winner=0, goto1=17, goto2=18}, -- 16
+
+    {player={}, score={0, 0}, winner=0, goto1=17, goto2=17}, -- 17
+    {player={}, score={0, 0}, winner=0, goto1=17, goto2=17}, -- 18
+  }
+  MODO = "INICIO"
+  CHAVE = 1
+  tfm.exec.newGame(CONFIG.mapaInicio)
+end
+
+function finalizaPartida()
+  -- procedimento para finalizar uma partida e entrar no intervalo
+  MODO = "INTERVALO"
+  tfm.exec.newGame(CONFIG.mapaIntervalo)
+end
+
+function iniciarTorneio()
+  -- procedimento para montar a tabela de confrontos e ir para o mapa do intervalo
+  if #DUPLAS == CONST.max/2 then
+    local pool = {}
+    for i, v in pairs(ENTRADA) do
+      table.insert(pool, i)
+      ENTRADA_AUX[v] = i
+    end
+    local function getRandomPair()
+      return table.remove(DUPLAS, math.random(#DUPLAS))
+    end
+    for i=1, CONST.max/4 do
+      CONFRONTO[i].player = {
+        getRandomPair(),
+        getRandomPair(),
+      }
+    end
+    ui.removeTextArea(TEXTAREA.PLAY)
+    ui.removeTextArea(TEXTAREA.START)
+    escondeParticipantes()
+    MODO = "INTERVALO"
+    tfm.exec.newGame(CONFIG.mapaIntervalo)
+  end
+end
+
+function declaraVencedor(p)
+  -- realiza os procedimentos de quando um jogador vence um mapa
+  p = nickFormat(p)
+  if JOGADORES[p] and not VENCEDOR then
+    VENCEDOR = p
+    CONFRONTO[CHAVE].score[JOGADORES[p]] = CONFRONTO[CHAVE].score[JOGADORES[p]] + 1
+    if CONFRONTO[CHAVE].score[JOGADORES[p]] == CONFIG.pontos then
+      local function pegaTime(jogador)
+        for j = 1, 2 do
+          if ENTRADA[CONFRONTO[CHAVE].player[j][1]] == jogador or ENTRADA[CONFRONTO[CHAVE].player[j][2]] == jogador then
+            return j
+          end
+        end
+      end
+      -- finalizar confronto
+      local proxConfronto1 = CONFRONTO[CHAVE].goto1
+      local proxConfronto2 = CONFRONTO[CHAVE].goto2
+      local timeVencedor = pegaTime(p)
+      local timePerdedor = timeVencedor == 1 and 2 or 1
+
+      table.insert(CONFRONTO[proxConfronto1].player, {
+        CONFRONTO[CHAVE].player[timeVencedor][1],
+        CONFRONTO[CHAVE].player[timeVencedor][2],
+      })
+
+      CONFRONTO[CHAVE].winner = timeVencedor
+
+      table.insert(CONFRONTO[proxConfronto2].player, {
+        CONFRONTO[CHAVE].player[timePerdedor][1],
+        CONFRONTO[CHAVE].player[timePerdedor][2],
+      })
+
+      atualizaBarra()
+      CHAVE = CHAVE + 1
+      TIMER = {tempo=os.time()+3000, func="finalizaPartida"}
+    else
+      -- proximo mapa
+      atualizaBarra()
+      TIMER = {tempo=os.time()+3000, func="novaPartida"}
+    end
+  end
+
+end
+
+function finalizarTorneio()
+  -- procedimentos de quando o torneio acaba e deve ir para o mapa do pódio
+  PODIO = {
+    CONFRONTO[16].player[CONFRONTO[16].winner],
+    CONFRONTO[16].player[3 - CONFRONTO[16].winner],
+    CONFRONTO[15].player[CONFRONTO[15].winner],
+  }
+  MODO = "PODIO"
+  tfm.exec.newGame(CONFIG.mapaVitoria)
+end
+
+function novaPartida()
+  -- procedimento para iniciar uma partida
+  MODO = "PARTIDA"
+  novoMapa()
+end
+
+-- INCLUSÃO/EXCLUSÃO DE PARTICIPANTES --
+
+function entradaParticipante(p, d)
+  -- faz a entrada do participante no torneio
+  if #ENTRADA < CONST.max and not ENTRADA_AUX[p] and not BAN[p] then
+    ENTRADA[#ENTRADA+1] = p
+    local id = #ENTRADA
+    ENTRADA_AUX[p] = id
+    if not d then
+      if TESTE then
+        if #DUPLAS == 0 then
+          DUPLAS[1] = {}
+        else
+          if #DUPLAS[#DUPLAS] == 2 then
+            DUPLAS[#DUPLAS+1] = {}
+          end
+        end
+      else
+        DUPLAS[#DUPLAS+1] = {}
+      end
+      DUPLAS[#DUPLAS][#DUPLAS[#DUPLAS]+1] = id
+    else
+      if not DUPLAS[d] then
+        DUPLAS[d] = {}
+      end
+      DUPLAS[d][#DUPLAS[d]+1] = id
+    end
+  end
+end
+
+function removerParticipante(d, n)
+  -- remove um participante da lista inicial do torneio
+  if DUPLAS[d] and MODO == "INICIO" then
+    local p = ENTRADA[DUPLAS[d][n]]
+    local id = ENTRADA_AUX[p]
+    table.remove(ENTRADA, ENTRADA_AUX[p])
+    ENTRADA_AUX[p] = nil
+    for i,v in pairs(DUPLAS) do
+      if v[1] and v[1] > id then
+        DUPLAS[i][1] = DUPLAS[i][1] - 1
+        ENTRADA_AUX[ENTRADA[DUPLAS[i][1]]] = DUPLAS[i][1]
+      end
+      if v[2] and v[2] > id then
+        DUPLAS[i][2] = DUPLAS[i][2] - 1
+        ENTRADA_AUX[ENTRADA[DUPLAS[i][2]]] = DUPLAS[i][2]
+      end
+    end
+    table.remove(DUPLAS[d], n)
+    if #DUPLAS[d] == 0 then
+      table.remove(DUPLAS, d)
+    end
+    ultimaEntrada = os.time()
+    atualizouParticipantes = false
+    exibeBotaoParticipar(p)
+  end
+end
+
+-- INTERFACE --
+
+function exibeBotaoParticipar(p)
+  -- mostra o botão de participar e de iniciar o torneio
+  local x = 190
+  if ENTRADA_AUX[p] then
+    ui.addTextArea(TEXTAREA.PLAY, "<p align='center'><font size='20px'>"..TEXT.PARTICIPANDO, p, x, 330, 200, 60, nil, nil, 1, true)
+  else
+    if #ENTRADA < 31 and #DUPLAS < 16 then
+      ui.addTextArea(TEXTAREA.PLAY, "<p align='center'><font size='40px'><a href='event:play'><vp>"..TEXT.PLAY, p, x, 330, 200, 60, nil, nil, 1, true)
+    else
+      ui.removeTextArea(TEXTAREA.PLAY, p)
+    end
+  end
+  if p then
+    if isAdmin(p) then
+      ui.addTextArea(TEXTAREA.START, "<p align='center'><font size='40px'><a href='event:start'><vp>"..TEXT.START, p, 410, 330, 200, 60, nil, nil, 1, true)
+    end
+  else
+    for i, v in pairs(ADMIN) do
+      ui.addTextArea(TEXTAREA.START, "<p align='center'><font size='40px'><a href='event:start'><vp>"..TEXT.START, v, 410, 330, 200, 60, nil, nil, 1, true)
+    end
+  end
+end
+
+function atualizaBarra()
+  -- modifica o nome do mapa durante as partidas
+  if MODO == "PARTIDA" then
+    local c = CONFRONTO[CHAVE]
+    local nameA1, nameA2, nameB1, nameB2 = '-', '-', '-', '-'
+    if c.player[1] and c.player[1][1] then
+      nameA1 = truncateNick(ENTRADA[c.player[1][1]])
+    end
+    if c.player[1] and c.player[1][2] then
+      nameA2 = truncateNick(ENTRADA[c.player[1][2]])
+    end
+    if c.player[2] and c.player[2][1] then
+      nameB1 = truncateNick(ENTRADA[c.player[2][1]])
+    end
+    if c.player[2] and c.player[1][2] then
+      nameB2 = truncateNick(ENTRADA[c.player[2][2]])
+    end
+    ui.setMapName(string.format("%s e %s (%s) x (%s) %s e %s",
+      nameA1,
+      nameA2,
+      CONFRONTO[CHAVE].score[1],
+      CONFRONTO[CHAVE].score[2],
+      nameB1,
+      nameB2))
+  end
+end
+
+function mostraTabela()
+  local pos = {
+    -- oitavas de final
+    {-170, 30, 0x2A342B},
+    {-170, 125, 0x2A342B},
+    {-170, 220, 0x2A342B},
+    {-170, 315, 0x2A342B},
+    {782, 30, 0x2A342B},
+    {782, 125, 0x2A342B},
+    {782, 220, 0x2A342B},
+    {782, 315, 0x2A342B},
+
+    -- quartas de final
+    {45, 78, 0x2A342B},
+    {45, 268, 0x2A342B},
+    {568, 78, 0x2A342B},
+    {568, 268, 0x2A342B},
+
+    -- semi final
+    {80, 173, 0x2A342B},
+    {527, 173, 0x2A342B},
+
+    {303, 215, 0x3A0439}, -- 3º lugar
+    {303, 120, 0x4B0606}, -- final
+  }
+  local ALTURA = 75
+  for i, v in pairs(pos) do
+    local c = CONFRONTO[i]
+    local text = string.format("%s%s : <j>%s", (c.winner == 1) and "<vp>" or "<v>", c.player[1] and truncateNick(ENTRADA[c.player[1][1]]) or "-------", c.score[1])
+    text = text .. string.format("\n%s%s : <j>%s", (c.winner == 1) and "<vp>" or "<v>", c.player[1] and truncateNick(ENTRADA[c.player[1][2]]) or "-------", c.score[1])
+    text = text .. '\n<g>----------------- vs -----------------</g>'
+    text = text .. string.format("\n%s%s : <j>%s", (c.winner == 2) and "<vp>" or "<v>", c.player[2] and truncateNick(ENTRADA[c.player[2][1]]) or "-------", c.score[2])
+    text = text .. string.format("\n%s%s : <j>%s", (c.winner == 2) and "<vp>" or "<v>", c.player[2] and truncateNick(ENTRADA[c.player[2][2]]) or "-------", c.score[2])
+
+    ui.addTextArea(TEXTAREA.CHAVE+i, text, nil, v[1], v[2], 195, ALTURA, v[3], (CHAVE == i) and 0xffff00 or 1, 1, true)
+  end
+  ui.addTextArea(TEXTAREA.FINAL, "<p align='center'><font size='14px' color='#4B0606'><b>"..TEXT.FINAL, nil, 303, 90, 195, nil, 0, 0, 0, false)
+  ui.addTextArea(TEXTAREA.TERCEIRO, "<p align='center'><font size='14px' color='#3A0439'><b>"..TEXT.TERCEIRO, nil, 303, 290, 195, nil, 0, 0, 0, false)
+  -- ui.addTextArea(TEXTAREA.SEMI1, "<p align='center'><font size='14px' color='#2A342B'><b>"..TEXT.SEMIFINAL, nil, 205, 175, 150, nil, 0, 0, 0, false)
+  -- ui.addTextArea(TEXTAREA.SEMI2, "<p align='center'><font size='14px' color='#2A342B'><b>"..TEXT.SEMIFINAL, nil, 445, 175, 150, nil, 0, 0, 0, false)
+  for i, v in pairs(ADMIN) do
+    ui.addTextArea(TEXTAREA.START, "<p align='center'><font size='40px'><a href='event:nextround'><vp>"..TEXT.START, v, 300, 330, 200, 60, nil, nil, 1, true)
+  end
+end
+
+function escondeTabela()
+  local pool = {TEXTAREA.FINAL, TEXTAREA.TERCEIRO, TEXTAREA.START, TEXTAREA.SEMI1, TEXTAREA.SEMI2}
+  for i=1, CONST.max do
+    table.insert(pool, TEXTAREA.CHAVE+i)
+  end
+  for i, v in pairs(pool) do
+    ui.removeTextArea(v, p)
+  end
+end
+
+function mostraParticipantes()
+  ui.addTextArea(TEXTAREA.PARTICIPANTES, "<p align='center'><font size='30px'><j>"..TEXT.PARTICIPANTES, nil, 5, 50, 790, 210, nil, nil, nil, true)
+  for name in pairs(tfm.get.room.playerList) do
+    for i, v in pairs(DUPLAS) do
+      local outtxt = {sformat("<j>%s) <n>%s", i, truncateNick(ENTRADA[v[1]]))}
+      if isAdmin(name) then
+        outtxt[#outtxt+1] = sformat("<a href='event:remove %s 1'><r> [x]</r></a>", i)
+      end
+      if v[2] then
+        outtxt[#outtxt+1] = sformat(" e %s", truncateNick(ENTRADA[v[2]]))
+        if isAdmin(name) then
+          outtxt[#outtxt+1] = sformat("<a href='event:remove %s 2'><r> [x]</r></a>", i)
+        end
+      else
+        if ENTRADA[v[1]] ~= name then
+          local find = false
+          for i = 1, #DUPLAS do
+            local name1 = DUPLAS[i][1]
+            local name2 = DUPLAS[i][2]
+            if (name1 and ENTRADA[name1] == name) or (name2 and ENTRADA[name2] == name) then
+              find = true
+              break
+            end
+          end
+          if not find then
+            outtxt[#outtxt+1] = sformat("<a href='event:join %s'><bv> [Juntar-se]</a>", i)
+          end
+        end
+      end
+      local x = 20+math.floor((i-1)/8)*400
+      local y = 90+(i-1)%8*20
+      ui.addTextArea(TEXTAREA.JANELA_PARTICIPANTES+i, tconcat(outtxt, ''), name, x, y, nil, nil, 0, 0, 0, true)
+    end
+    if isAdmin(name) then
+      local txt = sformat("%s : <a href='event:score'><j>[%s]", TEXT.SCORE_MAX, CONFIG.pontos)
+      ui.addTextArea(TEXTAREA.SCORE_MAX, "<p align='center'><font size='20px'>"..txt, name, 190, 275, 420, nil, nil, nil, nil, true)
+    end
+  end
+end
+
+function escondeParticipantes(p)
+  local pool = {TEXTAREA.PARTICIPANTES, TEXTAREA.SCORE_MAX}
+  for i=1, CONST.max do
+    table.insert(pool, TEXTAREA.JANELA_PARTICIPANTES+i)
+  end
+  for i, v in pairs(pool) do
+    ui.removeTextArea(v, p)
+  end
+end
+
+-- EVENTS --
+
+function eventNewPlayer(p)
+  if MODO == "INICIO" then
+    exibeBotaoParticipar(p)
+    mostraParticipantes(p)
+  elseif MODO == "INTERVALO" then
+    mostraTabela()
+  end
+end
+
+function eventPlayerLeft(p)
+  if MODO == "INICIO" then
+    for i = 1, #DUPLAS do
+      local find = false
+      local d, n = 0, 0
+      for j = 1, 2 do
+        if ENTRADA[DUPLAS[i][j]] == p then
+          d = i
+          n = j
+          find = true
+          break
+        end
+      end
+      if find then
+        removerParticipante(d, n)
+        break
+      end
+    end
+  end
+end
+
+function eventPlayerWon(p)
+  declaraVencedor(p)
+end
+
+function eventTextAreaCallback(id, p, cmd)
+  local arg = split(cmd)
+  if arg[1] == "play" then
+    if not ENTRADA_AUX[p] then
+      if #ENTRADA < 31 and #DUPLAS < 16 then
+        entradaParticipante(p, nil)
+        ultimaEntrada = os.time()
+        atualizouParticipantes = false
+      end
+      exibeBotaoParticipar(p)
+    end
+  elseif arg[1] == "score" and isAdmin(p) then
+    CONFIG.pontos = CONFIG.pontos>=5 and 1 or CONFIG.pontos + 1
+    mostraParticipantes()
+  elseif arg[1] == "remove" and arg[2] and tonumber(arg[2]) and arg[3] and tonumber(arg[3]) then
+    if isAdmin(p) then
+      removerParticipante(tonumber(arg[2]), tonumber(arg[3]))
+      exibeBotaoParticipar()
+      exibeBotaoParticipar(p)
+    end
+  elseif arg[1] == "join" and arg[2] and tonumber(arg[2]) then
+    if not ENTRADA_AUX[p] and #DUPLAS[tonumber(arg[2])] < 2 then
+      entradaParticipante(p, tonumber(arg[2]))
+      ultimaEntrada = os.time()
+      atualizouParticipantes = false
+      exibeBotaoParticipar(p)
+    end
+  elseif arg[1] == "start" and isAdmin(p) then
+    iniciarTorneio()
+  elseif arg[1] == "nextround" and isAdmin(p) then
+    if CHAVE > CONST.max/2 then
+      finalizarTorneio()
+    else
+      novaPartida()
+    end
+  elseif arg[1] == "finish" and isAdmin(p) then
+    reiniciarTorneio()
+  end
+end
+
+function eventChatCommand(p, cmd)
+  local arg = split(cmd)
+  if arg[1] == "random" and MODO == "INICIO" then
+    TESTE = true
+    if #DUPLAS > 0 then
+      for i = 1, #DUPLAS do
+        while #DUPLAS[i] < 2 do
+          entradaParticipante(nickFormat(gerarNick()), i)
+        end
+      end
+    end
+    while(#ENTRADA < CONST.max) do
+      entradaParticipante(nickFormat(gerarNick()), nil)
+    end
+    mostraParticipantes()
+    exibeBotaoParticipar()
+  elseif arg[1] == "win" and arg[2] and MODO == "PARTIDA" and isAdmin(p) then
+    declaraVencedor(nickFormat(arg[2]))
+  elseif arg[1] == "npp" and isAdmin(p) then
+    if arg[2] then
+      NPP = arg[2]
+      print(TEXT.NPP..arg[2])
+    else
+      NPP = false
+      print(TEXT.NPP_RANDOM..arg[2])
+    end
+  elseif arg[1] == "skip" and MODO == "PARTIDA" and isAdmin(p) then
+    if VENCEDOR and VENCEDOR ~= 0 then
+      CONFRONTO[CHAVE].score[JOGADORES[VENCEDOR]] = CONFRONTO[CHAVE].score[JOGADORES[VENCEDOR]] - 1
+      atualizaBarra()
+      TIMER = {tempo=os.time()+3000, func="novaPartida"}
+    end
+    VENCEDOR = 0
+    TIMER = {tempo=os.time()+3000, func="novaPartida"}
+  elseif arg[1] == "msg" and arg[2] and MODO == "INTERVALO" and isAdmin(p) then
+    local msg = string.format("<font size='12px'><p align='center'><rose><b>[%s] %s", p, table.concat(arg, " ", 2))
+    ui.addTextArea(TEXTAREA.MSG, msg, nil, 200, 50, 400, nil, 1, 0xED67EA, 0.7, true)
+    MSG = os.time()+40000
+  end
+end
+
+function eventNewGame()
+  ui.removeTextArea(TEXTAREA.TIMER)
+  if MODO == "INTERVALO" then
+    ui.setMapName(TEXT.INTERVALO)
+    tfm.exec.setGameTime(30)
+    mostraTabela()
+  elseif MODO == "PARTIDA" then
+    JOGADORES = {}
+    VENCEDOR = false
+    local colors = {0xFFFFFF, 0x1C1C1C}
+    for j = 1, 2 do
+      for i, v in pairs(CONFRONTO[CHAVE].player[j]) do
+        JOGADORES[ENTRADA[v]] = j
+        tfm.exec.setNameColor(ENTRADA[v], colors[j])
+      end
+    end
+    escondeTabela()
+    tfm.exec.setGameTime(63)
+    for i, v in pairs(tfm.get.room.playerList) do
+      if not JOGADORES[i] then
+        tfm.exec.killPlayer(i)
+      end
+    end
+    atualizaBarra()
+  elseif MODO == "PODIO" then
+    ui.setMapName(TEXT.PODIO)
+    escondeTabela()
+    for i, v in pairs(tfm.get.room.playerList) do
+      local find = false
+      local idx = 0
+      for j = 1, 3 do
+        if ENTRADA[PODIO[j][1]] == i or ENTRADA[PODIO[j][2]] == i then
+          idx = j
+          find = true
+          break
+        end
+      end
+      if find then
+        local name1 = ENTRADA[PODIO[idx][1]]
+        local name2 = ENTRADA[PODIO[idx][2]]
+        local pos = CONFIG.podioPos
+        tfm.exec.movePlayer(name1, pos[idx][1], pos[idx][2], false, 0, 0, false)
+        tfm.exec.movePlayer(name2, pos[idx][1], pos[idx][2], false, 0, 0, false)
+        if idx == 1 then
+          ui.addTextArea(TEXTAREA.VENCEDOR, string.format("<p align='center'><font size='30px' color='#ffffff'>"..TEXT.VENCEDOR, name1, name2), nil, 0, 50, 800, nil, 0, 0, 0, false)
+        end
+      else
+        tfm.exec.killPlayer(i)
+      end
+      if isAdmin(i) then
+        ui.addTextArea(TEXTAREA.START, "<p align='center'><font size='40px'><a href='event:finish'><vp>"..TEXT.FINISH, i, 300, 330, 200, 60, nil, nil, 1, true)
+      end
+    end
+    ui.addTextArea(TEXTAREA.PRIMEIRO, "<p align='center'><font color='#000000'><b>1", nil, 390, 235, 20, 20, 0xffffff, 0xFF0000, 1, false)
+    ui.addTextArea(TEXTAREA.SEGUNDO, "<p align='center'><font color='#000000'><b>2", nil, 480, 250, 20, 20, 0xffffff, 0x0010FF, 1, false)
+    ui.addTextArea(TEXTAREA.TERCEIRO, "<p align='center'><font color='#000000'><b>3", nil, 307, 263, 20, 20, 0xffffff, 0xF8FF00, 1, false)
+  elseif MODO == "INICIO" then
+    ui.setMapName(TEXT.TORNEIO)
+    ui.removeTextArea(TEXTAREA.PRIMEIRO)
+    ui.removeTextArea(TEXTAREA.SEGUNDO)
+    ui.removeTextArea(TEXTAREA.TERCEIRO)
+    ui.removeTextArea(TEXTAREA.VENCEDOR)
+    ui.removeTextArea(TEXTAREA.START)
+    mostraParticipantes()
+    exibeBotaoParticipar()
+  end
+end
+
+function eventLoop(current, remaining)
+  if TIMER then
+    if os.time() > TIMER.tempo then
+      local func = TIMER.func
+      TIMER = nil
+      _G[func]()
+    else
+      local t = math.ceil((TIMER.tempo - os.time())/1000)
+      if TIMER.func == "finalizaPartida" then
+        ui.addTextArea(TEXTAREA.TIMER, "<p align='center'><font size='30px'><j>"..TEXT.ULTIMO_MAPA..t, nil, 100, 300, 600, nil, nil, nil, 1, true)
+      elseif TIMER.func == "novaPartida" then
+        ui.addTextArea(TEXTAREA.TIMER, "<p align='center'><font size='30px'><j>"..TEXT.PROXIMO_MAPA..t
+        , nil, 100, 300, 600, nil, nil, nil, 1, true)
+      end
+    end
+  end
+  if MSG then
+    if os.time() > MSG then
+      MSG = false
+      ui.removeTextArea(TEXTAREA.MSG)
+    end
+  end
+  if MODO == "PARTIDA" and not VENCEDOR and (remaining < 0 or todosMortos()) then
+    novaPartida()
+  end
+  if MODO == "PODIO" then
+    local b = {0, 1, 2, 4, 9, 11, 13}
+    local x, y, id = math.random(800), math.random(400), b[math.random(#b)]
+    for i=1, 20 do
+      tfm.exec.displayParticle(id, x, y, math.random(-20,20)/10, math.random(-20,20)/10, 0, 0)
+    end
+  end
+  if MODO == "INICIO" then
+    if not atualizouParticipantes then
+      if ultimaEntrada < os.time() - 3000 then
+        atualizouParticipantes = true
+        ultimaEntrada = os.time()
+        mostraParticipantes()
+      end
+    end
+  end
+end
+
+function main()
+  reiniciarTorneio()
+  for i, v in pairs(COMANDOS) do
+    system.disableChatCommandDisplay(v, true)
+  end
+  local ban = BAN
+  BAN = {}
+  for i, v in pairs(ban) do
+    BAN[nickFormat(v)] = true
+  end
+end
+
+-- MAIN --
+
+main()
